@@ -1,15 +1,122 @@
 #include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+
 #include <alsa/asoundlib.h>
+#include <pigpio.h>
+
+// ALSA Sequencer handle
+static snd_seq_t *psSeq;
+
+// ALSA Sequencer event
+static snd_seq_event_t sEvent;
+
+// Define an array of pins, BCM numbering scheme
+#define NUM_BUTTON_PINS (4)
+static const uint8_t aui8ButtonIDs[NUM_BUTTON_PINS] = {
+	21,
+	20,
+	26,
+	16,
+};
+
+static uint8_t GetPinIndex(uint8_t ui8ID)
+{
+	switch (ui8ID)
+	{
+		default: break;
+		case 21: return 0;
+		case 20: return 1;
+		case 26: return 2;
+		case 16: return 3;
+	}
+	return 0;
+}
+
+void Destroy(int signal)
+{
+	// from the example code - reset all pins on sigkill, sigterm
+	// set all used pins to input, pull down
+	printf("Resetting pin state\n");
+	for (uint8_t i = 0; i < NUM_BUTTON_PINS; ++i)
+	{
+		gpioSetMode(aui8ButtonIDs[i], PI_INPUT);
+		gpioSetPullUpDown(aui8ButtonIDs[i], PI_PUD_DOWN);
+	}
+
+	gpioTerminate();
+
+	snd_seq_close(psSeq);
+
+	exit(0);
+}
+
+
+void GPIOEvent(int pin, int level, uint32_t tick)
+{
+	const uint8_t ui8Index = GetPinIndex(pin);
+
+	printf("GPIO %d became %d at %d \n", pin, level, tick);
+
+	// Since we set pull up mode, level 0 is note on, level 1 is note off
+	if (level == 0)
+	{
+		snd_seq_ev_set_noteon(
+			&sEvent,
+			0, // midi_channel
+			36 + ui8Index, // note enum
+			80 // velocity
+		);
+	}
+	else
+	{
+		snd_seq_ev_set_noteoff(
+			&sEvent,
+			0, // midi_channel
+			36 + ui8Index, // note enum
+			80 // velocity
+		);
+	}
+
+	snd_seq_event_output(psSeq, &sEvent);
+	snd_seq_drain_output(psSeq);
+}
+
+void SetupGPIO(void)
+{
+	printf("Setup pin state\n");
+
+	// Connect signal handlers to reset any changes we make here
+	signal(SIGINT, Destroy);
+	signal(SIGTERM, Destroy);
+	signal(SIGHUP, Destroy);
+
+	for (uint8_t i = 0; i < NUM_BUTTON_PINS; ++i)
+	{
+		gpioSetMode(aui8ButtonIDs[i], PI_INPUT);
+		gpioSetPullUpDown(aui8ButtonIDs[i], PI_PUD_UP);
+		gpioGlitchFilter(aui8ButtonIDs[i], 4000); // set 4ms debounce for gpioSetAlertFunc
+		gpioSetAlertFunc(aui8ButtonIDs[i], GPIOEvent);
+	}
+}
 
 int main(int argc, char *argv[])
 {
 	static int iError;
-	static snd_seq_t *psSeq;
+	// static snd_seq_t *psSeq;
 	static snd_seq_addr_t sDestPort;
 
 	if (argc < 2)
 	{
 		printf("Please specify output ALSA MIDI CLIENT:PORT or PORT name\n");
+		return 1;
+	}
+
+	if (gpioInitialise() < 0)
+	{
+		printf("pigpio initialisation failed\n");
 		return 1;
 	}
 
@@ -47,64 +154,23 @@ int main(int argc, char *argv[])
 		return 1; // TODO: graceful exit
 	}
 
-	// try play some notes for testing
-	{
-		snd_seq_event_t sEvent;
+	// Setup GPIO pins and their callbacks
+	SetupGPIO();
 
-		// Initialise event
-		snd_seq_ev_clear(&sEvent);
-		snd_seq_ev_set_direct(&sEvent);
+	// Initialise ALSA Event
+	snd_seq_ev_clear(&sEvent);
+	snd_seq_ev_set_direct(&sEvent);
 
-		// Send directly to the destination port
-		snd_seq_ev_set_dest(&sEvent, sDestPort.client, sDestPort.port);
+	// Send directly to the destination port
+	snd_seq_ev_set_dest(&sEvent, sDestPort.client, sDestPort.port);
 
-		for (int i = 0; i < 10; i++)
-		{
-			snd_seq_ev_set_noteon(
-				&sEvent,
-				0, // midi_channel
-				36 + i, // note enum
-				80 // velocity
-			);
+	// The alert callbacks will do everything we need from now on
+	// TODO: a version of this which just continually samples buttons & submits
+	// midi events from the same loop
+	pause();
 
-			snd_seq_event_output(psSeq, &sEvent);
-			// snd_seq_drain_output(psSeq);
-			printf("on %i\n", (36 + i));
-
-			// TODO: is draining the output slow? feels like we could queue up events
-			// you can sent multiple events via snd_seq_event_output before draining
-
-			snd_seq_ev_set_noteon(
-				&sEvent,
-				0, // midi_channel
-				72 + i, // note enum
-				80 // velocity
-			);
-
-			snd_seq_event_output(psSeq, &sEvent);
-			snd_seq_drain_output(psSeq);
-			printf("on %i\n", (72 + i));
-
-
-			sleep(1);
-
-			snd_seq_ev_set_noteoff(
-				&sEvent,
-				0, // midi_channel
-				36 + i, // note enum
-				80 // velocity
-			);
-
-			snd_seq_event_output(psSeq, &sEvent);
-			snd_seq_drain_output(psSeq);
-			printf("off %i\n", (36 + i));
-
-			sleep(1);
-		}
-	}
-
-	printf("Done\n");
-	snd_seq_close(psSeq);
+	// Unreachable
+	Destroy(0);
 
 	return 0;
 }
