@@ -13,6 +13,22 @@ static snd_seq_t *psSeq;
 // ALSA Sequencer event
 static snd_seq_event_t sEvent;
 
+/*
+	The wiring setup is pretty simple, all input pins connect to one leg of
+	their own button, the other button legs all connect to a common ground
+
+	Viewing the GPIO pins with the board's USB hub /ethernet at the bottom, the
+	pins in use are those closest to the USB hub:
+
+	https://www.etechnophiles.com/wp-content/uploads/2020/12/R-Pi-3-B-Pinout.jpg
+
+				...	...
+				|	|
+	unused		19	16		BUTTON_3
+	BUTTON_2	26	20		BUTTON_1
+	GROUND		GND	21		BUTTON_0
+*/
+
 // Define an array of pins, BCM numbering scheme
 #define NUM_BUTTON_PINS (4)
 static const uint8_t aui8ButtonIDs[NUM_BUTTON_PINS] = {
